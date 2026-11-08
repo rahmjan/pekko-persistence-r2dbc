@@ -85,7 +85,7 @@ object ConnectionFactoryProvider extends ExtensionId[ConnectionFactoryProvider] 
   private val PostgresDrivers = Set("postgresql", "postgres")
 
   // Options of the PostgreSQL driver, referred to by name so that the other drivers don't need r2dbc-postgresql on the
-  // classpath.
+  // classpath. The MySQL driver reads sslMode, sslCert and sslKey too.
   private val ForceBinary = Option.valueOf[java.lang.Boolean]("forceBinary")
   private val PreferAttachedBuffers = Option.valueOf[java.lang.Boolean]("preferAttachedBuffers")
   private val PreparedStatementCacheQueries = Option.valueOf[Integer]("preparedStatementCacheQueries")
@@ -94,6 +94,11 @@ object ConnectionFactoryProvider extends ExtensionId[ConnectionFactoryProvider] 
   private val SslCert = Option.valueOf[String]("sslCert")
   private val SslKey = Option.valueOf[String]("sslKey")
   private val SslPassword = Option.valueOf[String]("sslPassword")
+
+  // Options of the MySQL driver (MySqlConnectionFactoryProvider) for the root certificate and the key password, which
+  // it reads under other names than the PostgreSQL driver.
+  private val MySqlSslCa = Option.valueOf[String]("sslCa")
+  private val MySqlSslKeyPassword = Option.valueOf[String]("sslKeyPassword")
 
   // The driver, set with the `driver` setting or in the `url`. A `r2dbc:pool:<driver>://` url has the driver as its
   // protocol.
@@ -195,10 +200,11 @@ class ConnectionFactoryProvider(system: ActorSystem[?]) extends Extension {
 
     val driverOptions = builder.build()
     val mariaDB = MariaDBConnections.isMariaDB(driverOptions)
-    // the driver can be set with the `driver` setting or in the `url`
-    val mySQL = scala.Option(driverOptions.getValue(ConnectionFactoryOptions.DRIVER)).exists(_.toString == "mysql")
+    val driver = ConnectionFactoryProvider.driverName(driverOptions)
+    val mySQL = driver.contains("mysql")
+    val postgres = driver.exists(ConnectionFactoryProvider.PostgresDrivers)
 
-    if (ConnectionFactoryProvider.driverName(driverOptions).exists(ConnectionFactoryProvider.PostgresDrivers))
+    if (postgres)
       builder
         .option(ConnectionFactoryProvider.ForceBinary, java.lang.Boolean.TRUE)
         .option(ConnectionFactoryProvider.PreferAttachedBuffers, java.lang.Boolean.TRUE)
@@ -210,12 +216,15 @@ class ConnectionFactoryProvider(system: ActorSystem[?]) extends Extension {
     } else if (settings.sslEnabled) {
       builder.option(ConnectionFactoryOptions.SSL, java.lang.Boolean.TRUE)
 
-      // the PostgreSQL driver converts the mode from its name with SSLMode.fromValue
+      // the drivers convert the mode from its name
       if (settings.sslMode.nonEmpty)
         builder.option(ConnectionFactoryProvider.SslMode, settings.sslMode)
 
+      // the MySQL driver reads the root certificate and the key password under its own names
       if (settings.sslRootCert.nonEmpty)
-        builder.option(ConnectionFactoryProvider.SslRootCert, settings.sslRootCert)
+        builder.option(
+          if (mySQL) ConnectionFactoryProvider.MySqlSslCa else ConnectionFactoryProvider.SslRootCert,
+          settings.sslRootCert)
 
       if (settings.sslCert.nonEmpty)
         builder.option(ConnectionFactoryProvider.SslCert, settings.sslCert)
@@ -224,7 +233,9 @@ class ConnectionFactoryProvider(system: ActorSystem[?]) extends Extension {
         builder.option(ConnectionFactoryProvider.SslKey, settings.sslKey)
 
       if (settings.sslPassword.nonEmpty)
-        builder.option(ConnectionFactoryProvider.SslPassword, settings.sslPassword)
+        builder.option(
+          if (mySQL) ConnectionFactoryProvider.MySqlSslKeyPassword else ConnectionFactoryProvider.SslPassword,
+          settings.sslPassword)
     }
 
     if (mySQL) {

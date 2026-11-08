@@ -29,6 +29,7 @@ import pekko.actor.typed.ActorSystem
 import pekko.persistence.r2dbc.ConnectionFactoryProvider.ConnectionFactoryOptionsCustomizer
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import io.asyncer.r2dbc.mysql.MySqlConnectionFactoryProvider
 import io.r2dbc.postgresql.PostgresqlConnectionFactoryProvider
 import io.r2dbc.spi.ConnectionFactory
 import io.r2dbc.spi.ConnectionFactoryOptions
@@ -75,6 +76,14 @@ object ConnectionFactoryProviderDriverOptionsSpec {
       initial-size = 0
       connection-factory-options-customizer = "${classOf[CapturingCustomizer].getName}"
     }
+    mysql-ssl-options {
+      enabled = on
+      mode = "verify_identity"
+      root-cert = "root.crt"
+      cert = "client.crt"
+      key = "client.key"
+      password = "secret"
+    }
     postgres-options = $${capturing} {
       driver = "postgres"
       database = "postgres-options"
@@ -106,16 +115,23 @@ object ConnectionFactoryProviderDriverOptionsSpec {
       driver = "mysql"
       port = 3306
       database = "mysql-options"
+      ssl = $${mysql-ssl-options}
     }
     # the driver comes from the url, the driver setting stays postgres
     mysql-options-url = $${capturing} {
       url = "r2dbc:mysql://root@localhost:3306/mysql-options-url"
+      ssl = $${mysql-ssl-options}
+    }
+    mysql-pool-url = $${capturing} {
+      url = "r2dbc:pool:mysql://root@localhost:3306/mysql-pool-url"
+      ssl = $${mysql-ssl-options}
     }
     # without the customizer, whose class the isolated provider can't use
     mysql-without-postgres = $${pekko.persistence.r2dbc.connection-factory} {
       initial-size = 0
       driver = "mysql"
       port = 3306
+      ssl = $${mysql-ssl-options}
     }
     mariadb-without-postgres = $${pekko.persistence.r2dbc.connection-factory} {
       initial-size = 0
@@ -129,7 +145,9 @@ object ConnectionFactoryProviderDriverOptionsSpec {
   val PostgresOnlyOptions = Seq(
     PostgresqlConnectionFactoryProvider.FORCE_BINARY,
     PostgresqlConnectionFactoryProvider.PREFER_ATTACHED_BUFFERS,
-    PostgresqlConnectionFactoryProvider.PREPARED_STATEMENT_CACHE_QUERIES)
+    PostgresqlConnectionFactoryProvider.PREPARED_STATEMENT_CACHE_QUERIES,
+    PostgresqlConnectionFactoryProvider.SSL_ROOT_CERT,
+    PostgresqlConnectionFactoryProvider.SSL_PASSWORD)
 }
 
 class ConnectionFactoryProviderDriverOptionsSpec
@@ -183,9 +201,17 @@ class ConnectionFactoryProviderDriverOptionsSpec
       postgres.getValue(cacheQueries) shouldBe Integer.valueOf(100)
     }
 
-    Seq("mysql-options" -> "the driver setting", "mysql-options-url" -> "the url").foreach { case (path, source) =>
-      s"not set the PostgreSQL driver's options for the MySQL driver from $source" in {
+    Seq(
+      "mysql-options" -> "the driver setting",
+      "mysql-options-url" -> "the url",
+      "mysql-pool-url" -> "the protocol of the pool driver in the url").foreach { case (path, source) =>
+      s"pass the SSL options to the MySQL driver, and none of the PostgreSQL driver's, with the driver from $source" in {
         val mysql = optionsOf(path)
+        mysql.getValue(MySqlConnectionFactoryProvider.SSL_MODE).asInstanceOf[Any] shouldBe "verify_identity"
+        mysql.getValue(MySqlConnectionFactoryProvider.SSL_CA) shouldBe "root.crt"
+        mysql.getValue(MySqlConnectionFactoryProvider.SSL_CERT) shouldBe "client.crt"
+        mysql.getValue(MySqlConnectionFactoryProvider.SSL_KEY) shouldBe "client.key"
+        mysql.getValue(MySqlConnectionFactoryProvider.SSL_KEY_PASSWORD).asInstanceOf[Any] shouldBe "secret"
         PostgresOnlyOptions.foreach { option =>
           withClue(s"$option:") { mysql.hasOption(option) shouldBe false }
         }
